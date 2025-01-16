@@ -62,6 +62,7 @@ const publicRouteTable = new aws.ec2.RouteTable("redis-rt", {
     Name: "redis-rt",
   },
 });
+
 exports.publicRouteTableId = publicRouteTable.id;
 
 // Create a route in the Route Table for the Internet Gateway
@@ -119,6 +120,22 @@ const redisSecurityGroup = new aws.ec2.SecurityGroup("redis-secgrp", {
 });
 exports.redisSecurityGroupId = redisSecurityGroup.id;
 
+// Security Group For Frontend
+const frontendSecurityGroup = new aws.ec2.SecurityGroup("frontend-secgrp", {
+  vpcId: vpc.id,
+  description: "Allow HTTP traffic for the frontend",
+  ingress: [
+    { protocol: "tcp", fromPort: 80, toPort: 80, cidrBlocks: ["0.0.0.0/0"] },
+    { protocol: "tcp", fromPort: 22, toPort: 22, cidrBlocks: ["0.0.0.0/0"] },
+  ],
+  egress: [
+    { protocol: "-1", fromPort: 0, toPort: 0, cidrBlocks: ["0.0.0.0/0"] },
+  ],
+  tags: { Name: "frontend-secgrp" },
+});
+
+exports.frontendSecurityGroupId = frontendSecurityGroup.id;
+
 // Define an AMI for the EC2 instances
 const amiId = "ami-01811d4912b4ccb26"; // Ubuntu 24.04 LTS
 
@@ -133,7 +150,7 @@ const nodejsInstance = new aws.ec2.Instance("nodejs-instance", {
   tags: {
     Name: "nodejs-instance",
     Environment: "Development",
-    Project: "RedisSetup",
+    Project: "Redis Job Queue",
   },
 });
 exports.nodejsInstanceId = nodejsInstance.id;
@@ -182,34 +199,74 @@ const redisInstance6 = createRedisInstance(
   publicSubnet3.id
 );
 
-// Worker instance
-const workerInstance1 = new aws.ec2.Instance("worker-instance-1", {
-  instanceType: "t2.micro",
-  vpcSecurityGroupIds: [redisSecurityGroup.id],
-  ami: amiId,
-  subnetId: publicSubnet2.id,
-  keyName: "redis", // Update with your key pair
-  associatePublicIpAddress: true,
-  tags: {
-    Name: "worker-instance-1",
-    Environment: "Development",
-    Project: "RedisSetup",
+const redisEndpoint = `http://${redisInstance6.publicIp}:16379`;
+
+// Launch Template for worker instances
+const workerLaunchTemplate = new aws.ec2.LaunchTemplate(
+  "worker-launch-template",
+  {
+    instanceType: "t2.micro",
+    imageId: amiId,
+    keyName: "redis",
+    vpcSecurityGroupIds: [redisSecurityGroup.id],
+    userData: pulumi.interpolate`#!/bin/bash
+    sudo apt update -y
+    sudo apt install -y git nodejs npm
+    cd /home/ubuntu
+    git clone https://github.com/Safin-Ahmed/redis-job-backend
+    cd redis-job-backend
+    npm install
+    export REDIS_HOST=${redisEndpoint}
+    export REDIS_PORT=6379
+    node worker.js
+    `,
+    tags: { Name: "Worker-Template" },
+  }
+);
+
+// Auto Scaling Group For Workers
+const workerAutoScalingGroup = new aws.autoscaling.Group("worker-asg", {
+  desiredCapacity: 2,
+  maxSize: 10,
+  minSize: 1,
+  vpcZoneIdentifiers: [publicSubnet1.id, publicSubnet2.id, publicSubnet3.id],
+  launchTemplate: {
+    id: workerLaunchTemplate.id,
+    version: "$Latest",
   },
+  tags: [
+    {
+      key: "AutoScaleGroup",
+      value: "WorkerInstance",
+      propagateAtLaunch: true,
+    },
+  ],
 });
-const workerInstance2 = new aws.ec2.Instance("worker-instance-2", {
+
+// Monitoring Instance for Auto Scaling Worker
+const monitoringInstance = new aws.ec2.Instance("monitoring-instance", {
   instanceType: "t2.micro",
   vpcSecurityGroupIds: [redisSecurityGroup.id],
   ami: amiId,
-  subnetId: publicSubnet3.id,
+  subnetId: publicSubnet1.id,
   keyName: "redis", // Update with your key pair
   associatePublicIpAddress: true,
+  userData: `#!/bin/bash
+  sudo apt update -y
+  sudo apt install -y nodejs npm awscli git
+  cd /home/ubuntu
+  git clone https://github.com/Safin-Ahmed/redis-job-backend
+  npm install
+  node monitor.js
+  `,
   tags: {
-    Name: "worker-instance-2",
+    Name: "monitoring-instance",
     Environment: "Development",
-    Project: "RedisSetup",
+    Project: "Redis Job Queue",
   },
 });
 
+// Grafana Instance For Monitoring and Logging
 const grafanaInstance = new aws.ec2.Instance("grafana-instance", {
   instanceType: "t2.micro",
   vpcSecurityGroupIds: [redisSecurityGroup.id],
@@ -220,8 +277,37 @@ const grafanaInstance = new aws.ec2.Instance("grafana-instance", {
   tags: {
     Name: "grafana-instance",
     Environment: "Development",
-    Project: "RedisSetup",
+    Project: "Redis Job Queue",
   },
+});
+
+// Frontend Instance
+const frontendInstance = new aws.ec2.Instance("grafana-instance", {
+  instanceType: "t2.micro",
+  vpcSecurityGroupIds: [frontendSecurityGroup.id],
+  ami: amiId,
+  subnetId: publicSubnet1.id,
+  keyName: "redis", // Update with your key pair
+  associatePublicIpAddress: true,
+  tags: {
+    Name: "frontend-instance",
+    Environment: "Development",
+    Project: "Redis Job Queue",
+  },
+  userData: `#!/bin/bash
+    sudo apt update -y 
+    sudo apt install -y git nodejs npm nginx
+
+    cd /home/ubuntu
+    git clone https://github.com/Safin-Ahmed/redis-job-frontend
+    cd redis-job-frontend
+
+    npm install
+    npm run build
+
+    sudo mv /home/ubuntu/vite-react-frontend/dist /var/www/html
+    sudo systemctl restart nginx
+    `,
 });
 
 // Export Redis instance IDs and public IPs
@@ -237,6 +323,7 @@ exports.redisInstance5Id = redisInstance5.id;
 exports.redisInstance5PublicIp = redisInstance5.publicIp;
 exports.redisInstance6Id = redisInstance6.id;
 exports.redisInstance6PublicIp = redisInstance6.publicIp;
-exports.workerInstance1PublicIp = workerInstance1.publicIp;
-exports.workerInstance2PublicIp = workerInstance2.publicIp;
+exports.workerAutoScalingGroupId = workerAutoScalingGroup.id;
+exports.monitoringInstanceId = monitoringInstance.id;
 exports.grafanaInstancePublicIp = grafanaInstance.publicIp;
+exports.frontendInstancePublicIp = frontendInstance.publicIp;

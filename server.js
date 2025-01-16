@@ -1,11 +1,13 @@
+require("dotenv").config();
+
+require("./tracing");
+
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
 
 const jobRoutes = require("./routes/jobRoutes");
 const workerRoutes = require("./routes/workerRoutes");
-
-require("dotenv").config();
 
 const app = express();
 

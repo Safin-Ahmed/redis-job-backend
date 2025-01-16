@@ -1,15 +1,20 @@
 const { v4: uuidv4 } = require("uuid");
 
 const redis = require("../redisClient");
+const { trace } = require("@opentelemetry/api");
 
 // Enqueue a job
 exports.enqueueJob = async (req, res) => {
+  const span = trace.getTracer("redis-job-service").startSpan("enqueue_job");
   try {
     const { type, data, priority = "normal", dependencies = [] } = req.body;
 
     const jobId = `job:${uuidv4()}`;
+
     const queueName =
       priority === "high" ? "high_priority_jobs" : "normal_jobs";
+
+    span.setAttributes({ type, data, priority, dependencies, jobId });
 
     await redis.lpush(queueName, jobId);
     await redis.hmset(jobId, {
@@ -28,16 +33,21 @@ exports.enqueueJob = async (req, res) => {
 
     res.status(201).json({ success: true, message: "Job enqueued", jobId });
   } catch (error) {
+    span.recordException(error);
     console.error("Error enqueuing job: ", error);
     res.status(500).json({ success: false, message: "Failed to enqueue job" });
+  } finally {
+    span.end();
   }
 };
 
 // Check Job Status
 exports.getJobStatus = async (req, res) => {
+  const span = trace.getTracer("redis-job-service").startSpan("get_job_status");
   try {
     const { jobId } = req.params;
     const job = await redis.hgetall(jobId);
+    span.setAttributes({ jobId });
 
     if (!job || Object.keys(job).length === 0) {
       return res.status(404).json({ success: false, message: "Job not found" });
@@ -46,14 +56,18 @@ exports.getJobStatus = async (req, res) => {
     res.status(200).json({ success: true, job });
   } catch (error) {
     console.error("Error fetching job status: ", error);
+    span.recordException(error);
     res
       .status(500)
       .json({ success: false, message: "Failed to fetch job status" });
+  } finally {
+    span.end();
   }
 };
 
 // Get all jobs (monitoring)
 exports.getAllJobs = async (req, res) => {
+  const span = trace.getTracer("redis-job-service").startSpan("get_all_jobs");
   try {
     const jobKeys = await redis.keys("job:*");
     const jobs = [];
@@ -64,11 +78,16 @@ exports.getAllJobs = async (req, res) => {
     }
 
     res.status(200).json({ success: true, jobs });
-  } catch (error) {}
+  } catch (error) {
+    span.recordException(error);
+  } finally {
+    span.end();
+  }
 };
 
 // Get all job ids
 exports.getAllJobIds = async (req, res) => {
+  const span = trace.getTracer("redis-job-service").startSpan("get_all_jobs");
   try {
     // Fetch all job keys
     const jobKeys = await redis.keys("job:*");
@@ -77,17 +96,23 @@ exports.getAllJobIds = async (req, res) => {
     res.status(200).json({ success: true, jobIds: jobKeys });
   } catch (error) {
     console.error("Error fetching job IDs: ", error);
+    span.recordException(error);
     res
       .status(500)
       .json({ success: false, message: "Failed to fetch job IDs" });
+  } finally {
+    span.end();
   }
 };
 
 // Get Job Result
 exports.getJobResult = async (req, res) => {
+  const span = trace.getTracer("redis-job-service").startSpan("get_job_result");
   try {
     const { jobId } = req.params;
     const job = await redis.hgetall(jobId);
+
+    span.setAttributes({ jobId });
 
     if (!job || Object.keys(job).length === 0) {
       return res.status(404).json({ success: false, message: "Job not found" });
@@ -95,15 +120,19 @@ exports.getJobResult = async (req, res) => {
 
     return res.status(200).json({ success: true, result: job.result });
   } catch (error) {
+    span.recordException(error);
     console.error("Error fetching job result: ", error);
     res
       .status(500)
       .json({ success: false, message: "Failed to fetch job result" });
+  } finally {
+    span.end();
   }
 };
 
 // GET JOB STATS FOR DASHBOARD
 exports.getJobStats = async (req, res) => {
+  const span = trace.getTracer("redis-job-service").startSpan("get_job_stats");
   try {
     const jobKeys = await redis.keys("job:*");
     const stats = {
@@ -120,16 +149,22 @@ exports.getJobStats = async (req, res) => {
 
     return res.status(200).json({ success: true, stats });
   } catch (error) {
+    span.recordException(error);
     console.error("Error fetching job stats: ", error);
     res.status(500).json({ success: false, message: "Failed to fetch stats" });
+  } finally {
+    span.end();
   }
 };
 
 // Cancel a JOB
 exports.cancelJob = async (req, res) => {
+  const span = trace.getTracer("redis-job-service").startSpan("cancel_job");
   try {
     const { jobId } = req.params;
     const job = await redis.hgetall(jobId);
+
+    span.setAttributes({ jobId });
 
     if (!job || Object.keys(job).length === 0) {
       return res.status(404).json({ success: false, message: "Job not found" });
@@ -146,14 +181,20 @@ exports.cancelJob = async (req, res) => {
       message: "Cannot cancel completed or failed jobs",
     });
   } catch (error) {
+    span.recordException(error);
     console.error("Error cancelling job: ", error);
     res.status(500).json({ success: false, message: "Failed to cancel job" });
+  } finally {
+    span.end();
   }
 };
 
 exports.deleteJob = async (req, res) => {
+  const span = trace.getTracer("redis-job-service").startSpan("delete_job");
   try {
     const { jobId } = req.params;
+
+    span.setAttributes({ jobId });
 
     // Delete the job
     const jobExists = await redis.exists(jobId);
@@ -171,7 +212,10 @@ exports.deleteJob = async (req, res) => {
       .status(200)
       .json({ success: true, message: "Job deleted successfully" });
   } catch (err) {
+    span.recordException(err);
     console.error("Error deleting job: ", err);
     res.status(500).json({ success: false, message: "Failed to delete job" });
+  } finally {
+    span.end();
   }
 };
